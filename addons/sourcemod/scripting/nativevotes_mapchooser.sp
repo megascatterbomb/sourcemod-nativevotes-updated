@@ -93,6 +93,11 @@ enum
 	workshop_map_collection,
 	workshop_cleanup,
 
+	/* megascatterbomb's ConVars */
+	mapvote_shuffle_nominations,
+	mapvote_instant_change,
+	mapvote_min_time,
+
 	MAX_CONVARS
 }
 
@@ -187,6 +192,10 @@ public void OnPluginStart()
 	g_ConVars[mapvote_runoffpercent] 		= CreateConVar("sm_mapvote_runoffpercent", "50", "If winning choice has less than this percent of votes, hold a runoff.", _, true, 0.0, true, 100.0);
 	g_ConVars[mapcycle_auto]         		= CreateConVar("sm_mapcycle_auto", "0", "Specifies whether or not to automatically populate the maps list.", _, true, 0.0, true, 1.0);
 	g_ConVars[mapcycle_exclude]      		= CreateConVar("sm_mapcycle_exclude", ".*test.*|background01|^tr.*$", "Specifies which maps shouldn't be automatically added with a regex pattern.");
+	g_ConVars[mapvote_shuffle_nominations]	= CreateConVar("sm_mapvote_shuffle_nominations", "0", "Shuffles the nominations before putting them in a vote (forces sm_nominate_maxfound 0).", _, true, 0.0, true, 1.0);
+	g_ConVars[mapvote_instant_change]		= CreateConVar("sm_mapvote_instant_change", "0", "If set, immediately change the map after the mapvote concludes (unless extended).", _, true, 0.0, true, 1.0);
+	g_ConVars[mapvote_min_time]				= CreateConVar("sm_mapvote_min_time", "0", "If set and less than this many minutes have passed since map start, mp_maxrounds is incremented by one at the end of the round.", _, true, 0.0);
+
 	if (engine != Engine_SDK2013 && engine == Engine_TF2)
 	{
 		g_ConVars[workshop_map_collection]  = CreateConVar("sm_workshop_map_collection", "", "Specifies the workshop collection to fetch the maps from.");
@@ -503,7 +512,6 @@ public void Event_TeamplayWinPanel(Event event, const char[] name, bool dontBroa
 		
 	if (event.GetInt("round_complete") == 1 || StrEqual(name, "arena_win_panel"))
 	{
-		
 		if (!g_MapList.Length || g_HasVoteStarted || g_MapVoteCompleted || !g_ConVars[mapvote_endvote].BoolValue)
 		{
 			return;
@@ -592,12 +600,26 @@ public void CheckMaxRounds()
 	{
 		int roundcount = GameRules_GetProp("m_nRoundsPlayed");
 		int maxrounds = g_ConVars[mp_maxrounds].IntValue;
-		if (maxrounds)
+		if (maxrounds && roundcount >= (maxrounds - g_ConVars[mapvote_startround].IntValue))
 		{
-			if (roundcount >= (maxrounds - g_ConVars[mapvote_startround].IntValue))
-			{
-				InitiateVote(MapChange_MapEnd, null);
-			}			
+			float time = GetGameTime();
+			int minTime = g_ConVars[mapvote_min_time].IntValue;
+			int minTimeSeconds = minTime * 60;
+			int remainingseconds = RoundToFloor((minTime * 60.0) - time);
+
+			if (maxrounds && minTimeSeconds && time < minTimeSeconds) {
+				int mins = remainingseconds / 60;
+				int secs = remainingseconds % 60;
+				int flags = g_ConVars[mp_maxrounds].Flags;
+				int oldFlags = flags;
+				flags = flags & ~FCVAR_NOTIFY;
+				g_ConVars[mp_maxrounds].Flags = flags;
+				g_ConVars[mp_maxrounds].IntValue = maxrounds + 1;
+				g_ConVars[mp_maxrounds].Flags = oldFlags;
+				PrintToChatAll("[SM] Playing another round as we have played this map for less than %i minutes (%d:%02d remaining).", minTime, mins, secs);
+				return;
+			}
+			InitiateVote(MapChange_MapEnd, null);		
 		}
 	}
 }
@@ -637,6 +659,17 @@ public Action Command_MapVote(int client, int args)
 	InitiateVote(MapChange_MapEnd, null);
 
 	return Plugin_Handled;	
+}
+
+void ShuffleNominations()
+{
+	int lengthList = g_NominateList.Length;
+    for (int i = lengthList - 1; i > 0; --i)
+    {
+        int j = GetRandomInt(0, i);
+        g_NominateList.SwapAt(i, j);
+		g_NominateOwners.SwapAt(i, j);
+    }
 }
 
 /**
@@ -699,6 +732,9 @@ void InitiateVote(MapChange when, ArrayList inputlist=null)
 	 */
 	 
 	char map[PLATFORM_MAX_PATH];
+
+	bool dontChangeOption = (when == MapChange_Instant || when == MapChange_RoundEnd) && g_ConVars[mapvote_dontchange].BoolValue;
+	bool extendOption = (when != MapChange_Instant && g_ConVars[mapvote_extend].IntValue && g_Extends < g_ConVars[mapvote_extend].IntValue);
 	
 	/* No input given - Use our internal nominations and maplist */
 	if (inputlist == null)
@@ -719,7 +755,7 @@ void InitiateVote(MapChange when, ArrayList inputlist=null)
 				voteSize = maxItems;
 			}
 
-			if (g_ConVars[mapvote_extend].IntValue && g_Extends < g_ConVars[mapvote_extend].IntValue)
+			if (extendOption || dontChangeOption)
 			{
 				voteSize--;
 			}
@@ -731,6 +767,11 @@ void InitiateVote(MapChange when, ArrayList inputlist=null)
 		}
 		/* Smaller of the two - It should be impossible for nominations to exceed the size though (cvar changed mid-map?) */
 		int nominationsToAdd = nominateCount >= voteSize ? voteSize : nominateCount;
+
+		if(g_ConVars[mapvote_shuffle_nominations].IntValue == 1 && nominateCount > voteSize)
+		{
+			ShuffleNominations();
+		}
 		
 		for (int i = 0; i < nominationsToAdd; i++)
 		{
@@ -829,7 +870,7 @@ void InitiateVote(MapChange when, ArrayList inputlist=null)
 	}
 	
 	/* Do we add any special items? */
-	if ((when == MapChange_Instant || when == MapChange_RoundEnd) && g_ConVars[mapvote_dontchange].BoolValue)
+	if (dontChangeOption)
 	{
 		if (g_NativeVotes)
 		{
@@ -840,7 +881,7 @@ void InitiateVote(MapChange when, ArrayList inputlist=null)
 			g_VoteMenu.AddItem(VOTE_DONTCHANGE, "Don't Change");
 		}
 	}
-	else if (g_ConVars[mapvote_extend].BoolValue && g_Extends < g_ConVars[mapvote_extend].IntValue)
+	else if (extendOption)
 	{
 		if (g_NativeVotes)
 		{
@@ -977,14 +1018,21 @@ public void Handler_VoteFinishedGenericShared(const char[] map, const char[] dis
 	}
 	else
 	{
-		if (g_ChangeTime == MapChange_MapEnd)
+		if (g_ConVars[mapvote_instant_change].BoolValue)
+		{
+			DataPack data;
+			CreateDataTimer(4.0, Timer_ChangeMap, data);
+			data.WriteString(map);
+			g_ChangeMapInProgress = false;
+		}
+		else if (g_ChangeTime == MapChange_MapEnd)
 		{
 			SetNextMap(map);
 		}
 		else if (g_ChangeTime == MapChange_Instant)
 		{
 			DataPack data;
-			CreateDataTimer(2.0, Timer_ChangeMap, data);
+			CreateDataTimer(4.0, Timer_ChangeMap, data);
 			data.WriteString(map);
 			g_ChangeMapInProgress = false;
 		}
@@ -1401,8 +1449,8 @@ NominateResult InternalNominateMap(char[] map, bool force, int owner)
 	{
 		maxIncludes = g_ConVars[mapvote_include].IntValue;
 	}
-	
-	if (g_NominateList.Length >= maxIncludes && !force)
+
+	if (g_ConVars[mapvote_shuffle_nominations].IntValue != 1 && g_NominateList.Length >= maxIncludes && !force)
 	{
 		return Nominate_VoteFull;
 	}
@@ -1410,17 +1458,21 @@ NominateResult InternalNominateMap(char[] map, bool force, int owner)
 	g_NominateList.PushString(map);
 	g_NominateOwners.Push(owner);
 	
-	while (g_NominateList.Length > g_ConVars[mapvote_include].IntValue)
+	/* Skip this check if we're allowing arbitrary amount of nominations */
+	if (g_ConVars[mapvote_shuffle_nominations].IntValue != 1)
 	{
-		char oldmap[PLATFORM_MAX_PATH];
-		g_NominateList.GetString(0, oldmap, sizeof(oldmap));
-		Call_StartForward(g_NominationsResetForward);
-		Call_PushString(oldmap);
-		Call_PushCell(g_NominateOwners.Get(0));
-		Call_Finish();
-		
-		g_NominateList.Erase(0);
-		g_NominateOwners.Erase(0);
+		while (g_NominateList.Length > g_ConVars[mapvote_include].IntValue)
+		{
+			char oldmap[PLATFORM_MAX_PATH];
+			g_NominateList.GetString(0, oldmap, sizeof(oldmap));
+			Call_StartForward(g_NominationsResetForward);
+			Call_PushString(oldmap);
+			Call_PushCell(g_NominateOwners.Get(0));
+			Call_Finish();
+
+			g_NominateList.Erase(0);
+			g_NominateOwners.Erase(0);
+		}
 	}
 	
 	return Nominate_Added;
