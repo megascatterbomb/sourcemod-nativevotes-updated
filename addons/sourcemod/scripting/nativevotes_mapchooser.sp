@@ -88,13 +88,13 @@ enum
 	mapvote_voteduration,
 	mapvote_runoff,
 	mapvote_runoffpercent,
+	mapvote_shuffle_nominations,
 	mapcycle_auto,
 	mapcycle_exclude,
 	workshop_map_collection,
 	workshop_cleanup,
 
 	/* megascatterbomb's ConVars */
-	mapvote_shuffle_nominations,
 	mapvote_instant_change,
 	mapvote_min_time,
 
@@ -190,9 +190,9 @@ public void OnPluginStart()
 	g_ConVars[mapvote_voteduration]  		= CreateConVar("sm_mapvote_voteduration", "20", "Specifies how long the mapvote should be available for.", _, true, 5.0);
 	g_ConVars[mapvote_runoff] 		 		= CreateConVar("sm_mapvote_runoff", "0", "Hold run of votes if winning choice is less than a certain margin.", _, true, 0.0, true, 1.0);
 	g_ConVars[mapvote_runoffpercent] 		= CreateConVar("sm_mapvote_runoffpercent", "50", "If winning choice has less than this percent of votes, hold a runoff.", _, true, 0.0, true, 100.0);
+	g_ConVars[mapvote_shuffle_nominations]	= CreateConVar("sm_mapvote_shuffle_nominations", "0", "If set, allows infinite nominations and picks a random subset to appear in the vote.", _, true, 0.0, true, 1.0);
 	g_ConVars[mapcycle_auto]         		= CreateConVar("sm_mapcycle_auto", "0", "Specifies whether or not to automatically populate the maps list.", _, true, 0.0, true, 1.0);
 	g_ConVars[mapcycle_exclude]      		= CreateConVar("sm_mapcycle_exclude", ".*test.*|background01|^tr.*$", "Specifies which maps shouldn't be automatically added with a regex pattern.");
-	g_ConVars[mapvote_shuffle_nominations]	= CreateConVar("sm_mapvote_shuffle_nominations", "0", "Shuffles the nominations before putting them in a vote (forces sm_nominate_maxfound 0).", _, true, 0.0, true, 1.0);
 	g_ConVars[mapvote_instant_change]		= CreateConVar("sm_mapvote_instant_change", "0", "If set, immediately change the map after the mapvote concludes (unless extended).", _, true, 0.0, true, 1.0);
 	g_ConVars[mapvote_min_time]				= CreateConVar("sm_mapvote_min_time", "0", "If set and less than this many minutes have passed since map start, mp_maxrounds is incremented by one at the end of the round.", _, true, 0.0);
 
@@ -768,7 +768,7 @@ void InitiateVote(MapChange when, ArrayList inputlist=null)
 		/* Smaller of the two - It should be impossible for nominations to exceed the size though (cvar changed mid-map?) */
 		int nominationsToAdd = nominateCount >= voteSize ? voteSize : nominateCount;
 
-		if(g_ConVars[mapvote_shuffle_nominations].IntValue == 1 && nominateCount > voteSize)
+		if(g_ConVars[mapvote_shuffle_nominations].BoolValue && nominateCount > voteSize)
 		{
 			ShuffleNominations();
 		}
@@ -1450,7 +1450,7 @@ NominateResult InternalNominateMap(char[] map, bool force, int owner)
 		maxIncludes = g_ConVars[mapvote_include].IntValue;
 	}
 
-	if (g_ConVars[mapvote_shuffle_nominations].IntValue != 1 && g_NominateList.Length >= maxIncludes && !force)
+	if (!g_ConVars[mapvote_shuffle_nominations].BoolValue && g_NominateList.Length >= maxIncludes && !force)
 	{
 		return Nominate_VoteFull;
 	}
@@ -1458,8 +1458,7 @@ NominateResult InternalNominateMap(char[] map, bool force, int owner)
 	g_NominateList.PushString(map);
 	g_NominateOwners.Push(owner);
 	
-	/* Skip this check if we're allowing arbitrary amount of nominations */
-	if (g_ConVars[mapvote_shuffle_nominations].IntValue != 1)
+	if (!g_ConVars[mapvote_shuffle_nominations].BoolValue)
 	{
 		while (g_NominateList.Length > g_ConVars[mapvote_include].IntValue)
 		{
